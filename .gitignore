@@ -20,7 +20,8 @@ dist/
 
 # Package files
 *.jar
-
+.terraform/
+.terraform.lock.hcl
 # Maven
 target/
 dist/
