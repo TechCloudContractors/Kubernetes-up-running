@@ -19,12 +19,12 @@ class Column:
 
 
 class Properties:
-    next_link: None
+    nextLink: str
     columns: List[Column]
     rows: List[List[Union[List[str], float, str]]]
 
-    def __init__(self, next_link: None, columns: List[Column], rows: List[List[Union[List[str], float, str]]]) -> None:
-        self.next_link = next_link
+    def __init__(self, nextLink: None, columns: List[Column], rows: List[List[Union[List[str], float, str]]]) -> None:
+        self.nextLink = nextLink
         self.columns = columns
         self.rows = rows
 
