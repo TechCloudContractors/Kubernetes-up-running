@@ -1,0 +1,75 @@
+default:
+  tags:
+    - commitsmart-runner
+    - docker
+  image:
+    name: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+    entrypoint:
+      - "/usr/bin/env"
+      - "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+  cache:
+    paths:
+      - .terraform
+
+variables:
+  FOLDER_OUT: folder.out
+  TF_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/remote-state-lock
+
+stages:
+  - plan
+  - apply
+
+.terraform-plan-generation:
+  stage: plan
+  variables:
+    PLAN: plan.cache
+    PLAN_JSON: plan.json
+  before_script:
+    - gitlab-terraform --version
+    - gitlab-terraform init --reconfigure
+    - apk --no-cache add jq
+    - mkdir "${CI_PROJECT_DIR}/creds/"
+    - echo $GCLOUD_SERVICE_ACCOUNT | base64 -d > ${CI_PROJECT_DIR}/creds/serviceaccount.json
+    - export GOOGLE_APPLICATION_CREDENTIALS="${CI_PROJECT_DIR}/creds/serviceaccount.json"
+    - alias convert_report="jq -r '([.resource_changes[]?.change.actions?]|flatten)|{\"create\":(map(select(.==\"create\"))|length),\"update\":(map(select(.==\"update\"))|length),\"delete\":(map(select(.==\"delete\"))|length)}'"
+  script:
+    - gitlab-terraform validate
+    - gitlab-terraform plan
+    - gitlab-terraform plan-json
+    - gitlab-terraform show --json ${PLAN} | convert_report > ${PLAN_JSON}
+  only:
+    refs:
+      - merge_requests
+      - release
+    variables:
+      - $CI_MERGE_REQUEST_TARGET_BRANCH_NAME != "master"
+  artifacts:
+    paths:
+      - ${PLAN}
+    reports:
+      terraform: ${PLAN_JSON}
+
+.terraform-apply-generation:
+  stage: apply
+  variables:
+  before_script:
+    - echo ${TF_CREDENTIALS} | base64 -d > ~/.terraformrc
+    - gitlab-terraform --version
+    - gitlab-terraform init --reconfigure
+    - mkdir "${CI_PROJECT_DIR}/creds/"
+    - echo $GCLOUD_SERVICE_ACCOUNT | base64 -d > ${CI_PROJECT_DIR}/creds/serviceaccount.json
+    - export GOOGLE_APPLICATION_CREDENTIALS="${CI_PROJECT_DIR}/creds/serviceaccount.json"
+  script:
+    - gitlab-terraform apply
+  when: manual
+  only:
+    - release
+
+plan:
+  extends: .terraform-plan-generation
+
+apply:
+  extends: .terraform-apply-generation
+  needs:
+    - plan
