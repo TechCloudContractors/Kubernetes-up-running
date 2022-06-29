@@ -1,0 +1,109 @@
+default:
+  tags:
+    - commitsmart-runner
+    - docker
+  image:
+    name: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+    entrypoint:
+      - "/usr/bin/env"
+      - "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+  cache:
+    paths:
+      - .terraform
+
+variables:
+  FOLDER_OUT: folder.out
+  TF_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/remote-state-lock
+
+stages:
+  - precheck
+  - plan
+  - apply
+
+.terraform-plan-generation:
+  stage: plan
+  variables:
+    PLAN: plan.cache
+    PLAN_JSON: plan.json
+  before_script:
+    - cd $(cat ${FOLDER_OUT})
+    - gitlab-terraform --version
+    - gitlab-terraform init --reconfigure
+    - apk --no-cache add jq
+    - echo ${TF_CREDENTIALS} | base64 -d > ~/.terraformrc
+    - mkdir "${CI_PROJECT_DIR}/creds/"
+    - echo $GCLOUD_SERVICE_ACCOUNT | base64 -d > ${CI_PROJECT_DIR}/creds/serviceaccount.json
+    - export GOOGLE_APPLICATION_CREDENTIALS="${CI_PROJECT_DIR}/creds/serviceaccount.json"
+    - alias convert_report="jq -r '([.resource_changes[]?.change.actions?]|flatten)|{\"create\":(map(select(.==\"create\"))|length),\"update\":(map(select(.==\"update\"))|length),\"delete\":(map(select(.==\"delete\"))|length)}'"
+  script:
+    - gitlab-terraform validate
+    - gitlab-terraform plan
+    - gitlab-terraform plan-json
+    - gitlab-terraform show --json ${PLAN} | convert_report > ${PLAN_JSON}
+  only:
+    refs:
+      - merge_requests
+      - release
+    variables:
+      - $CI_MERGE_REQUEST_TARGET_BRANCH_NAME != "main"
+  artifacts:
+    paths:
+      - $(cat ${FOLDER_OUT})/${PLAN}
+    reports:
+      terraform: $(cat ${FOLDER_OUT})/${PLAN_JSON}
+
+.terraform-apply-generation:
+  stage: apply
+  variables:
+  before_script:
+    - cd $(cat ${FOLDER_OUT})
+    - echo ${TF_CREDENTIALS} | base64 -d > ~/.terraformrc
+    - gitlab-terraform --version
+    - gitlab-terraform init --reconfigure
+    - mkdir "${CI_PROJECT_DIR}/creds/"
+    - echo $GCLOUD_SERVICE_ACCOUNT | base64 -d > ${CI_PROJECT_DIR}/creds/serviceaccount.json
+    - export GOOGLE_APPLICATION_CREDENTIALS="${CI_PROJECT_DIR}/creds/serviceaccount.json"
+  script:
+    - gitlab-terraform apply
+  when: manual
+  only:
+    - release
+
+check-folder:
+  stage: precheck
+  image: registry.gitlab.com/gitlab-ci-utils/curl-jq:latest
+  before_script:
+    - echo $(curl -s --header "PRIVATE-TOKEN:${CI_PRIVATE_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/commits/${CI_COMMIT_SHA}")
+    - MR_BRANCH_LAST_COMMIT_SHA=$(curl -s --header "PRIVATE-TOKEN:${CI_PRIVATE_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/commits/${CI_COMMIT_SHA}" | jq -r '.parent_ids | del(.[] | select(. == "'${CI_COMMIT_BEFORE_SHA}'")) | .[-1]')
+    - echo $(curl -s --header "PRIVATE-TOKEN:${CI_PRIVATE_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/commits/${MR_BRANCH_LAST_COMMIT_SHA}/merge_requests")
+    - MR_BRANCH_NAME=$(curl -s --header "PRIVATE-TOKEN:${CI_PRIVATE_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/commits/${MR_BRANCH_LAST_COMMIT_SHA}/merge_requests" | jq -r '.[0].source_branch')
+  script:
+    - FOLDER=$(echo ${MR_BRANCH_NAME} | cut -f1 -d\/)
+    - if [ -z ${FOLDER} ];then echo "Invalid branch name. Could not determine folder by branch name."; exit 1; fi
+    - if [ ! -d ${FOLDER} ]; then echo "The folder \"${FOLDER}\" does not exist"; exit 2; fi
+    - echo ${FOLDER} > ${FOLDER_OUT}
+  only:
+    refs:
+      - merge_requests
+      - release
+    variables:
+      - $CI_MERGE_REQUEST_TARGET_BRANCH_NAME != "main"
+  artifacts:
+    paths:
+      - ${FOLDER_OUT}
+
+plan:
+  extends: .terraform-plan-generation
+  artifacts:
+    name: ${FOLDER_OUT}
+  needs:
+    - check-folder
+
+apply:
+  extends: .terraform-apply-generation
+  artifacts:
+    name: ${FOLDER_OUT}
+  needs:
+    - check-folder
+    - plan
