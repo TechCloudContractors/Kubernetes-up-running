@@ -1,0 +1,5 @@
+vpc_name: staging-test
+project_id: cantech-terraform
+target_service_account: prod-sa@cantech-terraform.iam.gserviceaccount.com
+region: northamerica-northeast1
+environment: staging
